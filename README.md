@@ -17,6 +17,19 @@ Designed for team/repo delivery health — **not** for measuring individuals.
 | **Review Cycle Time** | First meaningful review → first approval |
 | **PR Lead Time** | Open → merge |
 
+## Manipulation & drift guards
+
+The tool cannot stop people from changing how they work, but it **hardens the report** against silent formula changes, hand-edited numbers, and obvious gaming patterns:
+
+| Control | What it does |
+| --- | --- |
+| **Metric contract version** | Locked definitions in `src/contract.ts`; bump when formulas change |
+| **Integrity SHA-256** | Fingerprints contract + scope + aggregates; regenerate to verify a report |
+| **Manipulation signals** | Aggregate heuristics (e.g. high share of &lt;5 min TTFR, near-zero cycles, coverage gaps) |
+| **Drift vs snapshot** | Compares p50 to previous `*.snapshot.json` for the same workspace/repo |
+
+Guards never name people — only repo-level rates and swings.
+
 ## Setup
 
 ```bash
@@ -68,8 +81,9 @@ npm start -- --limit 50
 
 ## Output
 
-1. ASCII table in the terminal (n, avg, p50, p90 in hours).
-2. `metrics-report.md` with the same aggregates plus process insights.
+1. ASCII table in the terminal (n, avg, p50, p90 in hours) plus guard findings.
+2. `metrics-report.md` with aggregates, contract text, integrity hash, guards, insights.
+3. `metrics-report.snapshot.json` for the next run’s drift comparison.
 
 ## Project layout
 
@@ -80,7 +94,10 @@ src/
   client.ts     Bitbucket REST client + pagination
   filters.ts    Bot / author / update noise filters
   metrics.ts    TTFR, cycle, lead time + percentiles
-  report.ts     Table + markdown
+  contract.ts   Locked metric definitions + version
+  integrity.ts  SHA-256 fingerprint of aggregates
+  guards.ts     Manipulation + drift signals
+  report.ts     Table + markdown + snapshot I/O
   insights.ts   Aggregate process hints
   types.ts      Shared types
 ```

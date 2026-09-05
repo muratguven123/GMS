@@ -3,8 +3,21 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { BitbucketClient, mapPool } from "./client.js";
 import { resolveConfig } from "./config.js";
+import { METRIC_CONTRACT_VERSION } from "./contract.js";
+import {
+  buildSnapshot,
+  detectDrift,
+  detectManipulationSignals,
+} from "./guards.js";
+import { buildIntegrityBlock } from "./integrity.js";
 import { aggregateMetrics, buildPrTimingSample } from "./metrics.js";
-import { printTerminalTable, writeMarkdownReport } from "./report.js";
+import {
+  loadPreviousSnapshot,
+  printTerminalTable,
+  snapshotPathForReport,
+  writeMarkdownReport,
+  writeSnapshot,
+} from "./report.js";
 import type { BitbucketPullRequest, PrTimingSample, ReportMeta } from "./types.js";
 
 async function main(): Promise<void> {
@@ -13,7 +26,7 @@ async function main(): Promise<void> {
   program
     .name("bitbucket-pr-metrics")
     .description(
-      "Aggregate Bitbucket merged-PR delivery metrics (TTFR, review cycle, lead time). No individual attribution.",
+      "Aggregate Bitbucket merged-PR delivery metrics (TTFR, review cycle, lead time). No individual attribution. Includes manipulation/drift guards.",
     )
     .option("-w, --workspace <slug>", "Bitbucket workspace (overrides BITBUCKET_WORKSPACE)")
     .option("-r, --repo <slug>", "Repository slug (overrides BITBUCKET_REPO_SLUG)")
@@ -45,7 +58,7 @@ async function main(): Promise<void> {
 
   console.log(
     chalk.dim(
-      `Fetching up to ${config.limit} merged PRs for ${config.workspace}/${config.repoSlug}…`,
+      `Fetching up to ${config.limit} merged PRs for ${config.workspace}/${config.repoSlug} (contract v${METRIC_CONTRACT_VERSION})…`,
     ),
   );
 
@@ -55,7 +68,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(chalk.dim(`Loaded ${prs.length} PRs; fetching activity (concurrency=${config.concurrency})…`));
+  console.log(
+    chalk.dim(
+      `Loaded ${prs.length} PRs; fetching activity (concurrency=${config.concurrency})…`,
+    ),
+  );
 
   const samples = await mapPool(prs, config.concurrency, async (pr: BitbucketPullRequest) => {
     try {
@@ -83,10 +100,20 @@ async function main(): Promise<void> {
     createdRangeStart: minCreated,
     createdRangeEnd: maxCreated,
     generatedAt: new Date().toISOString(),
+    contractVersion: METRIC_CONTRACT_VERSION,
   };
 
-  printTerminalTable(metrics, meta);
-  await writeMarkdownReport(metrics, meta, config.out);
+  const integrity = buildIntegrityBlock(metrics, meta);
+  const snapPath = snapshotPathForReport(config.out);
+  const previous = await loadPreviousSnapshot(snapPath);
+  const guards = [
+    ...detectManipulationSignals(validSamples, metrics),
+    ...detectDrift(metrics, meta, previous),
+  ];
+
+  printTerminalTable(metrics, meta, integrity.sha256, guards);
+  await writeMarkdownReport(metrics, meta, config.out, integrity.sha256, guards);
+  await writeSnapshot(buildSnapshot(metrics, meta, integrity.sha256), snapPath);
 }
 
 main().catch((err: unknown) => {

@@ -1,15 +1,24 @@
 /**
- * Lightweight offline checks for filters + percentiles (no Bitbucket API).
+ * Lightweight offline checks for filters, percentiles, integrity, guards.
  */
 import assert from "node:assert/strict";
+import { METRIC_CONTRACT_VERSION } from "./contract.js";
 import {
   isBotActor,
   isMeaningfulReview,
   isSameAuthor,
   normalizeActivity,
 } from "./filters.js";
+import { detectManipulationSignals } from "./guards.js";
+import { buildIntegrityBlock } from "./integrity.js";
 import { mean, percentile, summarizeHours } from "./metrics.js";
-import type { BitbucketActivityItem, NormalizedActivity } from "./types.js";
+import type {
+  AggregateMetrics,
+  BitbucketActivityItem,
+  NormalizedActivity,
+  PrTimingSample,
+  ReportMeta,
+} from "./types.js";
 
 assert.equal(mean([]), null);
 assert.equal(mean([2, 4, 6]), 4);
@@ -22,10 +31,7 @@ assert.ok(stats.p50Hours != null);
 
 assert.equal(isBotActor({ nickname: "jenkins-ci" }), true);
 assert.equal(isBotActor({ username: "alice" }), false);
-assert.equal(
-  isSameAuthor({ uuid: "{a}" }, { uuid: "{a}" }),
-  true,
-);
+assert.equal(isSameAuthor({ uuid: "{a}" }, { uuid: "{a}" }), true);
 
 const comment: BitbucketActivityItem = {
   comment: {
@@ -35,14 +41,8 @@ const comment: BitbucketActivityItem = {
 };
 const norm = normalizeActivity(comment) as NormalizedActivity;
 assert.equal(norm.kind, "comment");
-assert.equal(
-  isMeaningfulReview(norm, { uuid: "{author}" }),
-  true,
-);
-assert.equal(
-  isMeaningfulReview(norm, { uuid: "{reviewer}" }),
-  false,
-);
+assert.equal(isMeaningfulReview(norm, { uuid: "{author}" }), true);
+assert.equal(isMeaningfulReview(norm, { uuid: "{reviewer}" }), false);
 
 const updateOnly: BitbucketActivityItem = {
   update: {
@@ -52,5 +52,34 @@ const updateOnly: BitbucketActivityItem = {
 };
 const upd = normalizeActivity(updateOnly) as NormalizedActivity;
 assert.equal(isMeaningfulReview(upd, { uuid: "{author}" }), false);
+
+const created = new Date("2024-01-01T10:00:00.000Z");
+const instantSamples: PrTimingSample[] = Array.from({ length: 12 }, () => ({
+  createdOn: created,
+  mergedOn: new Date("2024-01-02T10:00:00.000Z"),
+  firstMeaningfulReviewAt: new Date("2024-01-01T10:01:00.000Z"),
+  firstApprovalAt: new Date("2024-01-01T10:01:00.000Z"),
+}));
+const instantMetrics: AggregateMetrics = {
+  ttfr: summarizeHours(instantSamples.map(() => 1 / 60)),
+  reviewCycle: summarizeHours(instantSamples.map(() => 0)),
+  leadTime: summarizeHours(instantSamples.map(() => 24)),
+};
+const manip = detectManipulationSignals(instantSamples, instantMetrics);
+assert.ok(manip.some((f) => f.code === "HIGH_INSTANT_TTFR_RATE"));
+
+const meta: ReportMeta = {
+  workspace: "ws",
+  repoSlug: "repo",
+  sampleSize: 12,
+  createdRangeStart: created.toISOString(),
+  createdRangeEnd: created.toISOString(),
+  generatedAt: "2024-01-03T00:00:00.000Z",
+  contractVersion: METRIC_CONTRACT_VERSION,
+};
+const a = buildIntegrityBlock(instantMetrics, meta);
+const b = buildIntegrityBlock(instantMetrics, meta);
+assert.equal(a.sha256, b.sha256);
+assert.equal(a.contractVersion, METRIC_CONTRACT_VERSION);
 
 console.log("selfcheck ok");

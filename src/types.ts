@@ -92,6 +92,27 @@ export interface ReportMeta {
   createdRangeStart: string | null;
   createdRangeEnd: string | null;
   generatedAt: string;
+  contractVersion: string;
+}
+
+export type GuardSeverity = "low" | "medium" | "high";
+
+export interface GuardFinding {
+  code: string;
+  severity: GuardSeverity;
+  message: string;
+}
+
+export interface MetricsSnapshot {
+  contractVersion: string;
+  workspace: string;
+  repoSlug: string;
+  sampleSize: number;
+  createdRangeStart: string | null;
+  createdRangeEnd: string | null;
+  generatedAt: string;
+  integritySha256: string;
+  metrics: AggregateMetrics;
 }
 
 export interface AppConfig {
