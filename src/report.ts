@@ -2,14 +2,16 @@ import { readFile, writeFile } from "node:fs/promises";
 import chalk from "chalk";
 import Table from "cli-table3";
 import { METRIC_CONTRACT } from "./contract.js";
+import { buildInsights } from "./insights.js";
 import type {
   AggregateMetrics,
   GuardFinding,
+  MetricsHistory,
   MetricsSnapshot,
   ReportMeta,
+  RepoMetricsResult,
   StatSummary,
 } from "./types.js";
-import { buildInsights } from "./insights.js";
 
 function fmtHours(v: number | null): string {
   if (v == null || Number.isNaN(v)) return "n/a";
@@ -33,19 +35,31 @@ function severityPaint(severity: GuardFinding["severity"], text: string): string
   return chalk.dim(text);
 }
 
-export function printTerminalTable(
-  metrics: AggregateMetrics,
-  meta: ReportMeta,
-  integritySha256: string,
-  guards: GuardFinding[],
-): void {
+function scopeLabel(meta: ReportMeta): string {
+  if (meta.repos.length <= 1) return `${meta.workspace}/${meta.repos[0] ?? meta.repoSlug}`;
+  return `${meta.workspace}/[${meta.repos.length} repos]`;
+}
+
+export function printTerminalReport(opts: {
+  metrics: AggregateMetrics;
+  meta: ReportMeta;
+  integritySha256: string;
+  guards: GuardFinding[];
+  perRepo: RepoMetricsResult[];
+  history: MetricsHistory;
+}): void {
+  const { metrics, meta, integritySha256, guards, perRepo, history } = opts;
+
   console.log("");
   console.log(chalk.bold("Bitbucket PR process metrics (aggregate only)"));
   console.log(
     chalk.dim(
-      `${meta.workspace}/${meta.repoSlug} · sample n=${meta.sampleSize} · contract v${meta.contractVersion} · generated ${meta.generatedAt}`,
+      `${scopeLabel(meta)} · sample n=${meta.sampleSize} · contract v${meta.contractVersion} · generated ${meta.generatedAt}`,
     ),
   );
+  if (meta.repos.length > 1) {
+    console.log(chalk.dim(`Repos: ${meta.repos.join(", ")}`));
+  }
   if (meta.createdRangeStart && meta.createdRangeEnd) {
     console.log(
       chalk.dim(`PR created_on range: ${meta.createdRangeStart} → ${meta.createdRangeEnd}`),
@@ -59,6 +73,29 @@ export function printTerminalTable(
   );
   console.log("");
 
+  printMetricsTable("Portfolio / overall", metrics);
+
+  if (perRepo.length > 1) {
+    for (const repo of perRepo) {
+      printMetricsTable(repo.repoSlug, repo.metrics);
+    }
+  }
+
+  printTrendTable(history);
+
+  if (guards.length > 0) {
+    console.log(chalk.bold("Manipulation / drift guards"));
+    for (const g of guards) {
+      console.log(
+        severityPaint(g.severity, `  [${g.severity}] ${g.code}: ${g.message}`),
+      );
+    }
+    console.log("");
+  }
+}
+
+function printMetricsTable(title: string, metrics: AggregateMetrics): void {
+  console.log(chalk.bold(title));
   const table = new Table({
     head: [
       chalk.cyan("Metric"),
@@ -82,16 +119,35 @@ export function printTerminalTable(
 
   console.log(table.toString());
   console.log("");
+}
 
-  if (guards.length > 0) {
-    console.log(chalk.bold("Manipulation / drift guards"));
-    for (const g of guards) {
-      console.log(
-        severityPaint(g.severity, `  [${g.severity}] ${g.code}: ${g.message}`),
-      );
-    }
-    console.log("");
+function printTrendTable(history: MetricsHistory): void {
+  if (history.entries.length < 2) return;
+
+  console.log(chalk.bold("Trend (p50 hours, recent runs)"));
+  const table = new Table({
+    head: [
+      chalk.cyan("generatedAt"),
+      chalk.cyan("n"),
+      chalk.cyan("TTFR p50"),
+      chalk.cyan("Cycle p50"),
+      chalk.cyan("Lead p50"),
+    ],
+    style: { head: [], border: [] },
+  });
+
+  for (const e of history.entries) {
+    table.push([
+      e.generatedAt,
+      String(e.sampleSize),
+      fmtHours(e.metrics.ttfr.p50Hours),
+      fmtHours(e.metrics.reviewCycle.p50Hours),
+      fmtHours(e.metrics.leadTime.p50Hours),
+    ]);
   }
+
+  console.log(table.toString());
+  console.log("");
 }
 
 function markdownTable(metrics: AggregateMetrics): string {
@@ -107,12 +163,31 @@ function markdownTable(metrics: AggregateMetrics): string {
   return lines.join("\n");
 }
 
-export function buildMarkdownReport(
-  metrics: AggregateMetrics,
-  meta: ReportMeta,
-  integritySha256: string,
-  guards: GuardFinding[],
-): string {
+function markdownTrend(history: MetricsHistory): string {
+  if (history.entries.length < 2) {
+    return "_Not enough runs yet for a trend (need at least two snapshots in history)._";
+  }
+  const lines = [
+    "| generatedAt | n | TTFR p50 (h) | Cycle p50 (h) | Lead p50 (h) |",
+    "| --- | ---: | ---: | ---: | ---: |",
+  ];
+  for (const e of history.entries) {
+    lines.push(
+      `| ${e.generatedAt} | ${e.sampleSize} | ${fmtHours(e.metrics.ttfr.p50Hours)} | ${fmtHours(e.metrics.reviewCycle.p50Hours)} | ${fmtHours(e.metrics.leadTime.p50Hours)} |`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export function buildMarkdownReport(opts: {
+  metrics: AggregateMetrics;
+  meta: ReportMeta;
+  integritySha256: string;
+  guards: GuardFinding[];
+  perRepo: RepoMetricsResult[];
+  history: MetricsHistory;
+}): string {
+  const { metrics, meta, integritySha256, guards, perRepo, history } = opts;
   const insights = buildInsights(metrics);
   const range =
     meta.createdRangeStart && meta.createdRangeEnd
@@ -126,9 +201,21 @@ export function buildMarkdownReport(
           .map((g) => `- **[${g.severity}]** \`${g.code}\`: ${g.message}`)
           .join("\n");
 
+  const perRepoSection =
+    perRepo.length > 1
+      ? perRepo
+          .map(
+            (r) => `### \`${r.repoSlug}\` (n=${r.sampleSize})
+
+${markdownTable(r.metrics)}`,
+          )
+          .join("\n\n")
+      : "";
+
   return `# Bitbucket PR process metrics
 
-**Scope:** \`${meta.workspace}/${meta.repoSlug}\`  
+**Scope:** \`${scopeLabel(meta)}\`  
+**Repos:** ${meta.repos.map((r) => `\`${r}\``).join(", ")}  
 **Sample:** ${meta.sampleSize} merged pull requests  
 **PR created_on range:** ${range}  
 **Generated:** ${meta.generatedAt}  
@@ -142,6 +229,11 @@ export function buildMarkdownReport(
 ## Metrics (hours)
 
 ${markdownTable(metrics)}
+
+${perRepoSection ? `## Per-repository metrics\n\n${perRepoSection}\n` : ""}
+## Trend (recent runs)
+
+${markdownTrend(history)}
 
 ## Definitions (contract v${meta.contractVersion})
 
@@ -180,13 +272,17 @@ export async function loadPreviousSnapshot(
 }
 
 export async function writeMarkdownReport(
-  metrics: AggregateMetrics,
-  meta: ReportMeta,
   outPath: string,
-  integritySha256: string,
-  guards: GuardFinding[],
+  opts: {
+    metrics: AggregateMetrics;
+    meta: ReportMeta;
+    integritySha256: string;
+    guards: GuardFinding[];
+    perRepo: RepoMetricsResult[];
+    history: MetricsHistory;
+  },
 ): Promise<void> {
-  const body = buildMarkdownReport(metrics, meta, integritySha256, guards);
+  const body = buildMarkdownReport(opts);
   await writeFile(outPath, body, "utf8");
   console.log(chalk.green(`Wrote markdown report: ${outPath}`));
 }

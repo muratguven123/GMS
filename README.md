@@ -17,18 +17,34 @@ Designed for team/repo delivery health — **not** for measuring individuals.
 | **Review Cycle Time** | First meaningful review → first approval |
 | **PR Lead Time** | Open → merge |
 
-## Manipulation & drift guards
+## Features
 
-The tool cannot stop people from changing how they work, but it **hardens the report** against silent formula changes, hand-edited numbers, and obvious gaming patterns:
+### Multi-repo
+Pass several slugs (comma-separated). The tool reports **portfolio** aggregates plus a per-repo section.
 
+```bash
+npm run analyze -- --repo api,web,worker
+# or
+# BITBUCKET_REPO_SLUGS=api,web,worker
+```
+
+### Trend history
+Each run appends to `metrics-report.history.json` (last N entries, default 12) and prints a p50 trend table when at least two runs exist.
+
+### Manipulation & drift guards
 | Control | What it does |
 | --- | --- |
-| **Metric contract version** | Locked definitions in `src/contract.ts`; bump when formulas change |
-| **Integrity SHA-256** | Fingerprints contract + scope + aggregates; regenerate to verify a report |
-| **Manipulation signals** | Aggregate heuristics (e.g. high share of &lt;5 min TTFR, near-zero cycles, coverage gaps) |
-| **Drift vs snapshot** | Compares p50 to previous `*.snapshot.json` for the same workspace/repo |
+| **Metric contract version** | Locked definitions in `src/contract.ts` |
+| **Integrity SHA-256** | Fingerprints contract + scope + aggregates |
+| **Manipulation signals** | e.g. high share of &lt;5 min TTFR, near-zero cycles |
+| **Drift vs prior run** | p50 swings vs previous snapshot/history |
 
-Guards never name people — only repo-level rates and swings.
+### CI fail-on
+```bash
+npm run analyze -- --fail-on high
+# or BITBUCKET_METRICS_FAIL_ON=high
+```
+Exits non-zero if any guard at that severity **or higher** fires (`none` \| `low` \| `medium` \| `high`).
 
 ## Setup
 
@@ -38,66 +54,57 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env`:
-
 ```env
 BITBUCKET_TOKEN=...
 BITBUCKET_WORKSPACE=your-workspace
 BITBUCKET_REPO_SLUG=your-repo
-
-# Optional: App Password mode (Basic Auth)
-# BITBUCKET_USERNAME=your-username
+# BITBUCKET_REPO_SLUGS=repo-a,repo-b
+# BITBUCKET_USERNAME=...          # App Password → Basic Auth
+# BITBUCKET_METRICS_FAIL_ON=high
 ```
-
-- **With `BITBUCKET_USERNAME`:** Basic Auth (username + App Password in `BITBUCKET_TOKEN`).
-- **Without username:** Bearer token (`Authorization: Bearer …`).
-
-Required Bitbucket scopes typically include pull request **read** access for the repository.
 
 ## Usage
 
 ```bash
 npm run analyze
-# or
-npx tsx src/index.ts --limit 100 --out metrics-report.md
+npx tsx src/index.ts --repo api,web --limit 100 --fail-on medium --out metrics-report.md
 ```
 
 ### Options
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--workspace` / `-w` | `BITBUCKET_WORKSPACE` | Workspace slug |
-| `--repo` / `-r` | `BITBUCKET_REPO_SLUG` | Repository slug |
-| `--limit` / `-l` | `100` | Max merged PRs to sample |
+| `--workspace` / `-w` | env | Workspace slug |
+| `--repo` / `--repos` / `-r` | env | One or more repo slugs (comma-separated) |
+| `--limit` / `-l` | `100` | Max merged PRs **per repo** |
 | `--out` / `-o` | `metrics-report.md` | Markdown report path |
-| `--concurrency` / `-c` | `5` | Parallel activity API calls |
-
-### Build
-
-```bash
-npm run build
-npm start -- --limit 50
-```
+| `--concurrency` / `-c` | `5` | Parallel activity API calls per repo |
+| `--fail-on` | `none` | CI severity threshold |
+| `--history-limit` | `12` | Trend entries to retain |
 
 ## Output
 
-1. ASCII table in the terminal (n, avg, p50, p90 in hours) plus guard findings.
-2. `metrics-report.md` with aggregates, contract text, integrity hash, guards, insights.
-3. `metrics-report.snapshot.json` for the next run’s drift comparison.
+1. Terminal tables (portfolio, optional per-repo, trend, guards).
+2. `metrics-report.md`
+3. `metrics-report.snapshot.json` — latest snapshot for drift
+4. `metrics-report.history.json` — rolling trend history
 
 ## Project layout
 
 ```
 src/
   index.ts      CLI entry
-  config.ts     Env / flags
-  client.ts     Bitbucket REST client + pagination
+  analyze.ts    Per-repo fetch + sample build
+  config.ts     Env / flags (multi-repo, fail-on)
+  client.ts     Bitbucket REST client
   filters.ts    Bot / author / update noise filters
-  metrics.ts    TTFR, cycle, lead time + percentiles
-  contract.ts   Locked metric definitions + version
-  integrity.ts  SHA-256 fingerprint of aggregates
+  metrics.ts    Aggregations + percentiles
+  contract.ts   Locked metric definitions
+  integrity.ts  SHA-256 fingerprint
   guards.ts     Manipulation + drift signals
-  report.ts     Table + markdown + snapshot I/O
-  insights.ts   Aggregate process hints
+  fail.ts       --fail-on threshold helper
+  history.ts    Trend history I/O
+  report.ts     Tables + markdown
+  insights.ts   Process hints
   types.ts      Shared types
 ```

@@ -3,5 +3,6 @@ dist/
 .env
 metrics-report.md
 *.snapshot.json
+*.history.json
 *.log
 .DS_Store

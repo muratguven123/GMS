@@ -87,7 +87,9 @@ export interface AggregateMetrics {
 
 export interface ReportMeta {
   workspace: string;
+  /** Comma-joined repo slugs (stable scope key for snapshots/history). */
   repoSlug: string;
+  repos: string[];
   sampleSize: number;
   createdRangeStart: string | null;
   createdRangeEnd: string | null;
@@ -96,6 +98,8 @@ export interface ReportMeta {
 }
 
 export type GuardSeverity = "low" | "medium" | "high";
+
+export type FailOnLevel = "none" | GuardSeverity;
 
 export interface GuardFinding {
   code: string;
@@ -115,12 +119,28 @@ export interface MetricsSnapshot {
   metrics: AggregateMetrics;
 }
 
+export interface MetricsHistory {
+  workspace: string;
+  repoSlug: string;
+  entries: MetricsSnapshot[];
+}
+
+export interface RepoMetricsResult {
+  repoSlug: string;
+  sampleSize: number;
+  metrics: AggregateMetrics;
+  samples: PrTimingSample[];
+}
+
 export interface AppConfig {
   token: string;
   username?: string;
   workspace: string;
-  repoSlug: string;
+  /** One or more repository slugs. */
+  repoSlugs: string[];
   limit: number;
   out: string;
   concurrency: number;
+  failOn: FailOnLevel;
+  historyLimit: number;
 }
